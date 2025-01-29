@@ -9,6 +9,8 @@
 (define-constant ERR_VOTING_CLOSED (err u103))
 (define-constant ERR_INVALID_WEIGHT (err u104))
 (define-constant ERR_INVALID_COMMITMENT (err u105))
+(define-constant ERR_INVALID_INPUT (err u106))
+(define-constant ERR_INVALID_VOTER (err u107))
 
 ;; Data Variables
 (define-data-var voting-open bool true)
@@ -41,6 +43,9 @@
     (buff 20)  ;; Changed to (buff 20) to match hash160 output
 )
 
+;; List of valid voters
+(define-data-var valid-voters (list 1000 principal) (list))
+
 ;; Read-Only Functions
 
 (define-read-only (get-proposal (proposal-id uint))
@@ -62,6 +67,10 @@
     )
 )
 
+(define-read-only (is-valid-voter (voter principal))
+    (is-some (index-of (var-get valid-voters) voter))
+)
+
 ;; Public Functions
 
 (define-public (create-proposal (title (string-ascii 256)) (description (string-ascii 1024)) (blocks uint))
@@ -71,6 +80,9 @@
             (end-block (+ stacks-block-height blocks))
         )
         (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+        (asserts! (> (len title) u0) ERR_INVALID_INPUT)
+        (asserts! (> (len description) u0) ERR_INVALID_INPUT)
+        (asserts! (> blocks u0) ERR_INVALID_INPUT)
         (map-set proposals
             new-id
             {
@@ -85,10 +97,20 @@
     )
 )
 
+(define-public (add-voter (voter principal))
+    (begin
+        (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+        (asserts! (is-none (index-of (var-get valid-voters) voter)) ERR_INVALID_INPUT)
+        (var-set valid-voters (unwrap-panic (as-max-len? (append (var-get valid-voters) voter) u1000)))
+        (ok true)
+    )
+)
+
 (define-public (set-voter-weight (voter principal) (weight uint))
     (begin
         (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
         (asserts! (> weight u0) ERR_INVALID_WEIGHT)
+        (asserts! (is-valid-voter voter) ERR_INVALID_VOTER)
         (map-set voter-weights voter weight)
         (ok true)
     )
@@ -102,6 +124,8 @@
         (asserts! (var-get voting-open) ERR_VOTING_CLOSED)
         (asserts! (<= stacks-block-height (get end-block proposal)) ERR_VOTING_CLOSED)
         (asserts! (not (has-voted tx-sender proposal-id)) ERR_ALREADY_VOTED)
+        (asserts! (is-eq (len vote-hash) u20) ERR_INVALID_INPUT)
+        (asserts! (is-valid-voter tx-sender) ERR_INVALID_VOTER)
         
         (map-set vote-commitments tx-sender vote-hash)
         (ok true)
@@ -117,6 +141,7 @@
         )
         (asserts! (var-get voting-open) ERR_VOTING_CLOSED)
         (asserts! (not (has-voted tx-sender proposal-id)) ERR_ALREADY_VOTED)
+        (asserts! (is-valid-voter tx-sender) ERR_INVALID_VOTER)
         
         ;; Verify the vote commitment matches
         (asserts! 
