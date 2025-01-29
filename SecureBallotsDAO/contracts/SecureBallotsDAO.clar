@@ -11,6 +11,8 @@
 (define-constant ERR_INVALID_COMMITMENT (err u105))
 (define-constant ERR_INVALID_INPUT (err u106))
 (define-constant ERR_INVALID_VOTER (err u107))
+(define-constant ERR_SUSPICIOUS_ACTIVITY (err u108))
+(define-constant SUSPICIOUS_ACTIVITY_THRESHOLD u3)
 
 ;; Data Variables
 (define-data-var voting-open bool true)
@@ -44,7 +46,13 @@
 )
 
 ;; List of valid voters
-(define-data-var valid-voters (list 1000 principal) (list))
+(define-map valid-voters principal bool)
+
+;; Reputation scores for voters
+(define-map voter-reputation
+    principal
+    {score: int, suspicious-activities: uint}
+)
 
 ;; Read-Only Functions
 
@@ -68,7 +76,14 @@
 )
 
 (define-read-only (is-valid-voter (voter principal))
-    (is-some (index-of (var-get valid-voters) voter))
+    (default-to false (map-get? valid-voters voter))
+)
+
+(define-read-only (get-voter-reputation (voter principal))
+    (default-to 
+        {score: 0, suspicious-activities: u0}
+        (map-get? voter-reputation voter)
+    )
 )
 
 ;; Public Functions
@@ -100,8 +115,9 @@
 (define-public (add-voter (voter principal))
     (begin
         (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
-        (asserts! (is-none (index-of (var-get valid-voters) voter)) ERR_INVALID_INPUT)
-        (var-set valid-voters (unwrap-panic (as-max-len? (append (var-get valid-voters) voter) u1000)))
+        (asserts! (is-none (map-get? valid-voters voter)) ERR_INVALID_INPUT)
+        (map-set valid-voters voter true)
+        (map-set voter-reputation voter {score: 0, suspicious-activities: u0})
         (ok true)
     )
 )
@@ -120,12 +136,14 @@
     (let
         (
             (proposal (unwrap! (map-get? proposals proposal-id) ERR_INVALID_PROPOSAL))
+            (voter-rep (get-voter-reputation tx-sender))
         )
         (asserts! (var-get voting-open) ERR_VOTING_CLOSED)
         (asserts! (<= stacks-block-height (get end-block proposal)) ERR_VOTING_CLOSED)
         (asserts! (not (has-voted tx-sender proposal-id)) ERR_ALREADY_VOTED)
         (asserts! (is-eq (len vote-hash) u20) ERR_INVALID_INPUT)
         (asserts! (is-valid-voter tx-sender) ERR_INVALID_VOTER)
+        (asserts! (< (get suspicious-activities voter-rep) SUSPICIOUS_ACTIVITY_THRESHOLD) ERR_SUSPICIOUS_ACTIVITY)
         
         (map-set vote-commitments tx-sender vote-hash)
         (ok true)
@@ -138,10 +156,12 @@
             (proposal (unwrap! (map-get? proposals proposal-id) ERR_INVALID_PROPOSAL))
             (weight (get-voter-weight tx-sender))
             (commitment (unwrap! (get-vote-commitment tx-sender) ERR_INVALID_COMMITMENT))
+            (voter-rep (get-voter-reputation tx-sender))
         )
         (asserts! (var-get voting-open) ERR_VOTING_CLOSED)
         (asserts! (not (has-voted tx-sender proposal-id)) ERR_ALREADY_VOTED)
         (asserts! (is-valid-voter tx-sender) ERR_INVALID_VOTER)
+        (asserts! (< (get suspicious-activities voter-rep) SUSPICIOUS_ACTIVITY_THRESHOLD) ERR_SUSPICIOUS_ACTIVITY)
         
         ;; Verify the vote commitment matches
         (asserts! 
@@ -164,6 +184,12 @@
             (merge proposal {vote-count: (+ (get vote-count proposal) weight)})
         )
         
+        ;; Update voter reputation
+        (map-set voter-reputation
+            tx-sender
+            (merge voter-rep {score: (+ (get score voter-rep) 1)})
+        )
+        
         (ok true)
     )
 )
@@ -172,6 +198,29 @@
     (begin
         (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
         (var-set voting-open false)
+        (ok true)
+    )
+)
+
+(define-public (report-suspicious-activity (voter principal))
+    (let
+        (
+            (reporter-rep (get-voter-reputation tx-sender))
+            (voter-rep (get-voter-reputation voter))
+        )
+        (asserts! (is-valid-voter tx-sender) ERR_INVALID_VOTER)
+        (asserts! (is-valid-voter voter) ERR_INVALID_VOTER)
+        (asserts! (>= (get score reporter-rep) 5) ERR_NOT_AUTHORIZED)
+        
+        (map-set voter-reputation
+            voter
+            (merge voter-rep 
+                {
+                    suspicious-activities: (+ (get suspicious-activities voter-rep) u1),
+                    score: (- (get score voter-rep) 2)
+                }
+            )
+        )
         (ok true)
     )
 )
