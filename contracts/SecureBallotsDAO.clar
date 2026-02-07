@@ -69,6 +69,12 @@
 ;; List of valid voters
 (define-data-var valid-voters (list 1000 principal) (list))
 
+;; Map: voter -> list of proposal-ids (historia głosowań)
+(define-map voter-votes
+    principal
+    (list 1000 uint)
+)
+
 ;; ========================================
 ;; Read-Only Functions
 ;; ========================================
@@ -196,6 +202,7 @@
                 quorum-required: quorum
             }
         )
+        (print {event: "create-proposal", proposal-id: new-id, creator: tx-sender, category: category, quorum: quorum})
         (var-set proposal-count new-id)
         (ok new-id)
     )
@@ -210,6 +217,7 @@
         (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
         (asserts! (not (get executed proposal-data)) ERR_INVALID_INPUT)
         (map-delete proposals proposal-id)
+        (print {event: "delete-proposal", proposal-id: proposal-id, by: tx-sender})
         (ok true)
     )
 )
@@ -229,6 +237,7 @@
             proposal-id
             (merge proposal-data {end-block: new-end-block})
         )
+        (print {event: "extend-proposal-deadline", proposal-id: proposal-id, by: tx-sender, new-end-block: new-end-block})
         (ok new-end-block)
     )
 )
@@ -248,6 +257,7 @@
             proposal-id
             (merge proposal-data {executed: true})
         )
+        (print {event: "execute-proposal", proposal-id: proposal-id, by: tx-sender})
         (ok true)
     )
 )
@@ -261,6 +271,7 @@
         (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
         (asserts! (is-none (index-of (var-get valid-voters) voter)) ERR_INVALID_INPUT)
         (var-set valid-voters (unwrap-panic (as-max-len? (append (var-get valid-voters) voter) u1000)))
+        (print {event: "add-voter", voter: voter, by: tx-sender})
         (ok true)
     )
 )
@@ -303,6 +314,7 @@
         
         ;; Remove voter weight
         (map-delete voter-weights voter)
+        (print {event: "remove-voter", voter: voter, by: tx-sender})
         (ok true)
     )
 )
@@ -313,6 +325,7 @@
         (asserts! (> weight u0) ERR_INVALID_WEIGHT)
         (asserts! (is-valid-voter voter) ERR_INVALID_VOTER)
         (map-set voter-weights voter weight)
+        (print {event: "set-voter-weight", voter: voter, weight: weight, by: tx-sender})
         (ok true)
     )
 )
@@ -333,6 +346,7 @@
         (asserts! (is-valid-voter tx-sender) ERR_INVALID_VOTER)
         
         (map-set vote-commitments tx-sender vote-hash)
+        (print {event: "commit-vote", proposal-id: proposal-id, voter: tx-sender})
         (ok true)
     )
 )
@@ -364,14 +378,27 @@
             {voter: tx-sender, proposal-id: proposal-id}
             {weight: weight, committed: true, timestamp: current-time}
         )
-        
+
+        ;; Update voter-votes map (historia głosowań)
+        (let (
+            (current (default-to (list) (map-get? voter-votes tx-sender)))
+            (updated (unwrap-panic (as-max-len? (append current proposal-id) u1000)))
+        )
+            (map-set voter-votes tx-sender updated)
+        )
+
         ;; Update vote count
         (map-set proposals
             proposal-id
             (merge proposal {vote-count: (+ (get vote-count proposal) weight)})
         )
-        
+
+        (print {event: "reveal-vote", proposal-id: proposal-id, voter: tx-sender, weight: weight})
         (ok true)
+    ;; Read-only: get all proposal-ids voted by a user
+    (define-read-only (get-user-votes (voter principal))
+        (default-to (list) (map-get? voter-votes voter))
+    )
     )
 )
 
@@ -387,6 +414,7 @@
         (asserts! (not (is-eq tx-sender delegate)) ERR_INVALID_DELEGATION)
         
         (map-set delegations tx-sender delegate)
+        (print {event: "delegate-vote", delegator: tx-sender, delegate: delegate})
         (ok true)
     )
 )
@@ -396,6 +424,7 @@
     (begin
         (asserts! (is-some (map-get? delegations tx-sender)) ERR_INVALID_DELEGATION)
         (map-delete delegations tx-sender)
+        (print {event: "revoke-delegation", delegator: tx-sender})
         (ok true)
     )
 )
@@ -408,6 +437,7 @@
     (begin
         (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
         (var-set voting-open false)
+        (print {event: "close-voting", by: tx-sender})
         (ok true)
     )
 )
@@ -416,6 +446,7 @@
     (begin
         (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
         (var-set voting-open true)
+        (print {event: "open-voting", by: tx-sender})
         (ok true)
     )
 )
@@ -425,6 +456,7 @@
         (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
         (asserts! (> quorum u0) ERR_INVALID_INPUT)
         (var-set minimum-quorum quorum)
+        (print {event: "set-minimum-quorum", quorum: quorum, by: tx-sender})
         (ok true)
     )
 )
